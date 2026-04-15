@@ -1,0 +1,24 @@
+# Cargo
+/target
+Cargo.lock
+
+# C build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+bases.bin

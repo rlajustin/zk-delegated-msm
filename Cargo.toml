@@ -1,0 +1,25 @@
+[package]
+name = "zk-delegated-msm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "zk_delegated_msm"
+path = "src/lib.rs"
+
+[build-dependencies]
+cc = "1.0"
+
+[dependencies]
+blst = "0.3"
+rayon = "1.11"
+rand = "0.8"
+rand_chacha = "0.3"
+ark-poly = "0.5"
+ark-ff = "0.5"
+ark-bls12-381 = "0.5.0"
+
+
+[[bin]]
+name = "zk_delegated_msm_test"
+path = "src/main.rs"
