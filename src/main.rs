@@ -1,73 +1,79 @@
-use std::io::{Read, Write};
-use zk_delegated_msm::{blst_p2, MatrixType, TestHarness};
+use blst::p2_affines;
+use std::sync::mpsc::channel;
 
-static KAPPA: usize = 256;
-static ERROR_RATE: f64 = 0.01;
-static BASES_FILE: &str = "bases.bin";
+use zk_delegated_msm::io::{init_level, save_bases, ClientRequest, CommStats};
+use zk_delegated_msm::{generate_bases, generate_scalars, MsmClient, MsmServer, ZkDelegatedMsm};
 
-fn save_bases(bases: &[blst_p2], path: &str) -> std::io::Result<()> {
-    let mut file = std::fs::File::create(path)?;
-    let count = bases.len() as u32;
-    file.write_all(&count.to_le_bytes())?;
-    for base in bases {
-        // Transmuting to bytes for raw storage; blst_p2 is 288 bytes (uncompressed)
-        let bytes: [u8; 288] = unsafe { std::mem::transmute(*base) };
-        file.write_all(&bytes)?;
+static BASE_PATH: &str = "data.bin";
+
+fn main() -> std::io::Result<()> {
+    let n = 1 << 18;
+    let kappa = 1 << 8; // 256
+    if init_level(BASE_PATH) == 0 {
+        println!("Generating global bases file");
+        let raw_bases = generate_bases(n);
+        save_bases(
+            &BASE_PATH.to_string(),
+            p2_affines::from(&raw_bases).as_slice(),
+        )
+        .expect("Failed to save global bases");
+    } else {
+        println!("Global bases found");
     }
+
+    println!("Initializing client-server setup");
+    let protocol = ZkDelegatedMsm::new(256, 1f64 / (kappa as f64));
+    let mut client = MsmClient::new(protocol, BASE_PATH);
+    client.init_client(n, kappa)?;
+
+    let (server_tx, server_rx) = channel();
+
+    let (ready_tx, ready_rx) = channel();
+    let server_handle = std::thread::spawn(move || {
+        let server = MsmServer::new(BASE_PATH);
+        server.run(n, server_rx, ready_tx);
+    });
+
+    println!("Main: Waiting for server to initialize...");
+    ready_rx
+        .recv()
+        .expect("Server thread panicked or dropped before booting");
+    println!("Main: Server is up! Starting ZK initialization.");
+    client.init_client_zk(&server_tx)?;
+
+    let mut stats = CommStats::default();
+    println!("Testing client request");
+    let x_scalars = generate_scalars(n);
+
+    // This is the simplified API you wanted:
+    let (res, time) = client.request(&server_tx, &x_scalars, &mut stats);
+    match res {
+        Ok(_result) => {
+            println!("\n✅ MSM Computation Successful!");
+            println!("\n Total Time: {:?}", time);
+            print_report(n, &stats);
+        }
+        Err(e) => {
+            println!("\n❌ Protocol Error: {}", e);
+            println!("\n Total Time: {:?}", time);
+        }
+    }
+
+    server_tx.send(ClientRequest::Shutdown).unwrap();
+    server_handle.join().unwrap();
+
     Ok(())
 }
 
-fn load_bases(path: &str) -> std::io::Result<Vec<blst_p2>> {
-    let mut file = std::fs::File::open(path)?;
-    let mut count_bytes = [0u8; 4];
-    file.read_exact(&mut count_bytes)?;
-    let count = u32::from_le_bytes(count_bytes) as usize;
-    let mut bases = Vec::with_capacity(count);
-    let mut buf = [0u8; 288];
-    for _ in 0..count {
-        file.read_exact(&mut buf)?;
-        let point: blst_p2 = unsafe { std::mem::transmute(buf) };
-        bases.push(point);
-    }
-    Ok(bases)
-}
-
-fn main() {
-    println!("\n{}\n", "*".repeat(80));
-    println!("TESTING DELEGATED MSM\n");
-    println!("{}\n", "*".repeat(80));
-
-    let bases = match load_bases(BASES_FILE) {
-        Ok(bases) => {
-            println!("Loaded {} bases from {}", bases.len(), BASES_FILE);
-            bases
-        }
-        Err(_) => {
-            println!("Generating bases...");
-            let bases = TestHarness::generate_bases(1 << 18);
-            println!("Saving bases to {}", BASES_FILE);
-            save_bases(&bases, BASES_FILE).expect("failed to save bases");
-            bases
-        }
-    };
-
-    let sizes: Vec<usize> = (10..=18).map(|exp| 1 << exp).collect();
-    println!("Sizes: {:?}", sizes);
-
-    let harness = TestHarness::new().verbose(true);
-    println!("\n{}", "=".repeat(80));
+fn print_report(n: usize, stats: &CommStats) {
+    println!("--- Final Report ---");
+    println!("Size (n):  {}", n);
     println!(
-        "TEST: ZK-LPN Protocol (kappa={:}, error_rate={:}, type=Toeplitz)",
-        KAPPA, ERROR_RATE
+        "Sent:      {:.2} MB",
+        stats.total_bytes_sent as f64 / 1_000_000.0
     );
-    println!("{}", "=".repeat(80));
-
-    let protocol =
-        zk_delegated_msm::zk2g2t::ZkDelegatedMsm::new(KAPPA, ERROR_RATE, MatrixType::Toeplitz);
-
-    harness.run_suite(&protocol, &bases, &sizes, 3);
-
-    println!("\n{}", "*".repeat(80));
-    println!("TESTING COMPLETE");
-    println!("{}", "*".repeat(80));
+    println!(
+        "Received:  {:.2} KB",
+        stats.total_bytes_received as f64 / 1_000.0
+    );
 }

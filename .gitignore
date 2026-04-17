@@ -21,4 +21,5 @@ Cargo.lock
 Thumbs.db
 
 # Project specific
-bases.bin
+*.bin
+data/*
