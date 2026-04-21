@@ -1,2 +1,2 @@
 CompileFlags:
-  Add: [-I/tmp/blst/bindings]
+  Add: [-I/tmp/blst/bindings, -I/usr/local/include, -lntl, -lgmp]

@@ -1,65 +1,50 @@
 use crate::io::{
-    init_level, load_2g2t_sk, load_bases_subset, load_pk, load_zk_sk, point_to_hex, save_2g2t_sk,
-    save_pk, save_zk_sk, ClientRequest, CommStats,
+    init_level, load_2g2t_sk, load_bases_subset, load_pk, point_to_hex, save_2g2t_sk, save_pk,
+    ClientRequest, CommStats,
 };
-use crate::{
-    compute_msm, DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol, DelegatedMsmSk,
-    ZkDelegatedMsm, ZkParams,
-};
+use crate::protocol::{HasMsmBase, LatticeParams};
+use crate::{compute_msm, DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol};
 use blst::{blst_p2, blst_scalar, p2_affines};
 use std::ops::Add;
 
 use std::sync::mpsc::{channel, Sender};
 
-pub struct MsmClientState {
+pub struct MsmClientState<P: DelegatedMsmProtocol> {
     pub bases: p2_affines,
-    pub sk: DelegatedMsmSk,
+    pub sk: P::SecretKey,
     pub pk: DelegatedMsmPk,
     pub n: usize,
     pub kappa: usize,
 }
 
-pub struct MsmClient {
-    pub protocol: ZkDelegatedMsm,
-    pub base_path: String,
-    pub state: Option<MsmClientState>,
+pub struct MsmClient<P: DelegatedMsmProtocol> {
+    pub protocol: P,
+    pub base_dir: String,
+    pub state: Option<MsmClientState<P>>,
 }
 
-impl MsmClient {
-    pub fn new(protocol: ZkDelegatedMsm, base_path: &str) -> Self {
+impl<P: DelegatedMsmProtocol> MsmClient<P> {
+    pub fn new(protocol: P, base_dir: &str) -> Self {
         Self {
             protocol,
-            base_path: base_path.to_string(),
+            base_dir: base_dir.to_string(),
             state: None,
         }
     }
 
-    pub fn load_state(&mut self, params: ZkParams) -> std::io::Result<()> {
-        load_zk_sk(&self.base_path, params)?;
-
-        Ok(())
-    }
-
     pub fn init_client(&mut self, n: usize, kappa: usize) -> std::io::Result<()> {
-        let global_bases = load_bases_subset(&self.base_path, n)?;
-        let sk;
-        let pk;
-        match init_level(&self.base_path) {
-            0 => {
-                let (s, p, preprocess_time) = self.protocol.preprocess(n, &global_bases);
-                sk = s;
-                pk = p;
-                println!("2G2T preprocess took {:?}", preprocess_time);
+        let global_bases = load_bases_subset(&self.base_dir, n)?;
+        if init_level::<P>(&self.base_dir) == 0 {
+            let (base, p, preprocess_time) = self.protocol.preprocess(n, &global_bases);
+            println!("2G2T preprocess took {:?}", preprocess_time);
 
-                println!("Saving 2G2T State");
-                save_2g2t_sk(&self.base_path, &sk)?;
-                save_pk(&self.base_path, &pk)?;
-            }
-            1..=u8::MAX => {
-                sk = load_2g2t_sk(&self.base_path)?;
-                pk = load_pk(&self.base_path, n)?;
-            }
+            println!("Saving 2G2T State");
+            save_2g2t_sk(&self.base_dir, &base)?;
+            save_pk(&self.base_dir, &p)?;
         }
+
+        let pk = load_pk(&self.base_dir, n)?;
+        let sk = P::SecretKey::from_base(load_2g2t_sk(&self.base_dir)?);
 
         self.state = Some(MsmClientState {
             bases: global_bases,
@@ -73,7 +58,7 @@ impl MsmClient {
 
     pub fn init_client_zk(&mut self, server: &Sender<ClientRequest>) -> std::io::Result<()> {
         let state = self.state.as_mut().expect("Client state missing");
-        if init_level(&self.base_path) <= 1 {
+        if init_level::<P>(&self.base_dir) <= 1 {
             let preprocess_zk_time = self.protocol.preprocess_zk(
                 state.n,
                 state.kappa,
@@ -85,19 +70,19 @@ impl MsmClient {
 
             println!("ZK preprocess took {:?}", preprocess_zk_time);
 
-            save_zk_sk(&self.base_path, &state.sk)?;
+            P::save_secret_key(&self.base_dir, &state.sk)?;
 
             println!("Session initialized and keys persisted to storage");
             Ok(())
         } else {
-            state.sk = load_zk_sk(
-                &self.base_path,
-                ZkParams {
+            state.sk = P::load_secret_key(
+                &self.base_dir,
+                LatticeParams {
                     n: state.n,
                     kappa: state.kappa,
                 },
             )?;
-            state.pk = load_pk(&self.base_path, state.n)?;
+            state.pk = load_pk(&self.base_dir, state.n)?;
 
             println!("Client fully initialized from files");
 
@@ -134,7 +119,6 @@ impl MsmClient {
 
         stats.record_inbound_points(2);
 
-        // 5. Verification
         let proof = DelegatedMsmPf {
             a_result: response.a,
             b_result: response.b,

@@ -1,6 +1,7 @@
 # Cargo
 /target
 Cargo.lock
+.clangd
 
 # C build artifacts
 *.o
@@ -22,4 +23,3 @@ Thumbs.db
 
 # Project specific
 *.bin
-data/*

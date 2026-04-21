@@ -9,14 +9,14 @@ pub struct MsmServerState {
 }
 
 pub struct MsmServer {
-    pub base_path: String,
+    pub base_dir: String,
     pub state: Option<MsmServerState>,
 }
 
 impl MsmServer {
-    pub fn new(base_path: &str) -> Self {
+    pub fn new(base_dir: &str) -> Self {
         Self {
-            base_path: base_path.to_string(),
+            base_dir: base_dir.to_string(),
             state: None,
         }
     }
@@ -27,15 +27,11 @@ impl MsmServer {
         rx: Receiver<ClientRequest>,
         ready_tx: std::sync::mpsc::Sender<()>,
     ) {
-        // 1. Perform the heavy lifting (loading bases, etc.)
         self.boot(n);
         println!("Server: Booted and listening...");
 
-        // 2. Send the "Ready" signal back to main
-        // We don't care if it fails (e.g., if main dropped the receiver), so we use let _
         let _ = ready_tx.send(());
 
-        // 3. Start the message loop
         while let Ok(msg) = rx.recv() {
             match msg {
                 ClientRequest::Compute(z_scalars, tx_back) => {
@@ -50,9 +46,9 @@ impl MsmServer {
 
     fn boot(&mut self, n: usize) {
         let bases =
-            load_bases_subset(&self.base_path, n).expect("Global bases file missing or too small.");
+            load_bases_subset(&self.base_dir, n).expect("Global bases file missing or too small.");
 
-        let t_bases = load_pk(&self.base_path, n)
+        let t_bases = load_pk(&self.base_dir, n)
             .expect("PK missing or too small")
             .t_bases;
 

@@ -18,10 +18,7 @@ rand_chacha = "0.3"
 ark-poly = "0.5"
 ark-ff = "0.5"
 ark-bls12-381 = "0.5.0"
-bincode = "=1.3.3"
-mpsc = "0.2.6"
 hex = "0.4"
-
 
 [[bin]]
 name = "zk_delegated_msm_test"

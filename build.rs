@@ -12,7 +12,8 @@ fn main() {
     println!("cargo:rustc-link-lib=m");
 
     let mut cfg = cc::Build::new();
-    cfg.file("c/helper.c");
+    cfg.cpp(true);
+    cfg.file("c/helper.cpp");
     cfg.include("c");
     cfg.include(&blst_lib_dir);
     cfg.include(format!("{}/bindings", blst_lib_dir));
@@ -22,6 +23,14 @@ fn main() {
     } else if target_os == "linux" {
         cfg.flag("-D__ELF__");
     }
+
+    println!("cargo:rustc-link-lib=ntl");
+    println!("cargo:rustc-link-search=native=/opt/homebrew/opt/gmp/lib");
+    println!("cargo:rustc-link-lib=gmp");
+    cfg.include("/usr/local/include");
+    cfg.include("/opt/homebrew/opt/gmp/include");
+    // suppress C warnings
+    cfg.flag("-w");
 
     cfg.compile("blst_custom");
 
