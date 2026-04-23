@@ -34,7 +34,7 @@ impl<P: DelegatedMsmProtocol> MsmClient<P> {
 
     pub fn init_client(&mut self, n: usize, kappa: usize) -> std::io::Result<()> {
         let global_bases = load_bases_subset(&self.base_dir, n)?;
-        if init_level::<P>(&self.base_dir) == 0 {
+        if init_level::<P>(&self.base_dir) <= 1 {
             let (base, p, preprocess_time) = self.protocol.preprocess(n, &global_bases);
             println!("2G2T preprocess took {:?}", preprocess_time);
 
