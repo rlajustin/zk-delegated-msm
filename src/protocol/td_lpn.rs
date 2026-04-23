@@ -1,28 +1,42 @@
 use crate::bindings::{
-    compute_trapdoor_product_c, generate_trapdoor_matrix_c, sample_errors_and_affines_c,
+    delegate_trapdoor_ntl, preprocess_zk_trapdoor_ntl, trapdoor_free, trapdoor_generate,
+    TrapdoorMatrix,
 };
-use crate::io::{point_to_hex, save_td_sk, ClientRequest};
+use crate::io::{load_td_sk, point_to_hex, save_td_sk, ClientRequest};
 use crate::protocol::{HasMsmBase, MsmBase};
 use crate::timer::Timer;
 use crate::{
-    compute_msm, compute_msm_slice, fast_inner_product_safe, preprocess_2g2t_logic, random_scalar,
-    DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol, LatticeParams,
+    compute_msm, compute_msm_slice, compute_mt_p_trapdoor_server_aided, preprocess_2g2t_logic,
+    random_scalar, DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol, LatticeParams,
 };
 use blst::{
-    blst_fr, blst_fr_add, blst_fr_from_scalar, blst_p2, blst_p2_add_or_double, blst_p2_affine,
-    blst_p2_cneg, blst_p2_is_equal, blst_p2_mult, blst_scalar, blst_scalar_from_fr, p2_affines,
+    blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_cneg, blst_p2_is_equal, blst_p2_mult,
+    blst_scalar, p2_affines,
 };
-use std::time::Duration;
-
 use rand::Rng;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
+
+pub struct TrapdoorPtr(pub *mut TrapdoorMatrix);
+
+impl Drop for TrapdoorPtr {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { trapdoor_free(self.0) };
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct TdSk {
     pub base: MsmBase,
     pub mt_p: Option<p2_affines>,
-    pub trapdoor_matrix: Option<Vec<blst_scalar>>,
+    // Opaque NTL TrapdoorMatrix — None until preprocess_zk runs
+    pub trapdoor: Option<TrapdoorPtr>,
+    // Seed stored so we can cheaply reconstruct on load (no serialization needed)
     pub trapdoor_seed: Option<u32>,
+    pub n: usize,
+    pub kappa: usize,
 }
 
 #[derive(Default)]
@@ -42,14 +56,6 @@ impl TdMsm {
     }
 }
 
-fn generate_scalar_vector(n: usize) -> Vec<blst_scalar> {
-    let mut s_vec: Vec<blst_scalar> = vec![blst_scalar::default(); n];
-    for s in s_vec.iter_mut() {
-        *s = random_scalar();
-    }
-    s_vec
-}
-
 impl HasMsmBase for TdSk {
     fn from_base(base: MsmBase) -> Self {
         Self {
@@ -67,7 +73,18 @@ impl DelegatedMsmProtocol for TdMsm {
     type Auxiliary = TdAux;
 
     fn load_secret_key(base_dir: &str, params: LatticeParams) -> std::io::Result<TdSk> {
-        crate::io::load_td_sk(base_dir, params)
+        // Loads seed from disk, rebuilds TrapdoorMatrix in-memory — no matrix I/O
+        let mut sk = load_td_sk(base_dir, params)?;
+
+        if let Some(seed) = sk.trapdoor_seed {
+            let timer = Timer::new();
+            println!("Generating trapdoor matrix");
+            let ptr = unsafe { trapdoor_generate(sk.n, sk.kappa, seed) };
+            assert!(!ptr.is_null(), "trapdoor_generate failed on load");
+            println!("Trapdoor matrix generation took {:?}", timer.elapsed());
+            sk.trapdoor = Some(TrapdoorPtr(ptr));
+        }
+        Ok(sk)
     }
 
     fn save_secret_key(base_dir: &str, sk: &Self::SecretKey) -> std::io::Result<()> {
@@ -78,7 +95,6 @@ impl DelegatedMsmProtocol for TdMsm {
         let timer = Timer::new();
         let r = random_scalar();
         let (rho_super, q_point, t_bases_vec) = preprocess_2g2t_logic(bases, n, &r);
-
         (
             MsmBase {
                 r,
@@ -97,22 +113,33 @@ impl DelegatedMsmProtocol for TdMsm {
         n: usize,
         kappa: usize,
         _bases: &p2_affines,
-        _server: &Sender<ClientRequest>,
+        server: &Sender<ClientRequest>,
         sk: &mut Self::SecretKey,
         _pk: &mut DelegatedMsmPk,
     ) -> Duration {
-        let timer = Timer::new();
-
-        let matrix_size = n * kappa;
-        let mut trapdoor_matrix: Vec<blst_scalar> = vec![blst_scalar::default(); matrix_size];
+        let mut timer = Timer::new();
         let seed: u32 = rand::thread_rng().gen();
 
-        unsafe {
-            generate_trapdoor_matrix_c(trapdoor_matrix.as_mut_ptr(), n, kappa, seed);
-        }
+        let mut a_matrix_flat = vec![blst_scalar::default(); n * kappa];
+        let mut td_ptr: *mut TrapdoorMatrix = std::ptr::null_mut();
 
-        sk.trapdoor_matrix = Some(trapdoor_matrix);
+        unsafe {
+            preprocess_zk_trapdoor_ntl(a_matrix_flat.as_mut_ptr(), &mut td_ptr, n, kappa, seed);
+        }
+        assert!(
+            !td_ptr.is_null(),
+            "delegate_trapdoor_preprocess_ntl returned null"
+        );
+
+        let mt_p_vec =
+            compute_mt_p_trapdoor_server_aided(&a_matrix_flat, server, &mut timer, n, kappa, sk);
+
+        // 4. Update the Secret Key
+        sk.trapdoor = Some(TrapdoorPtr(td_ptr));
         sk.trapdoor_seed = Some(seed);
+        sk.n = n;
+        sk.kappa = kappa;
+        sk.mt_p = Some(p2_affines::from(&mt_p_vec));
 
         timer.elapsed()
     }
@@ -125,66 +152,45 @@ impl DelegatedMsmProtocol for TdMsm {
         x_scalars: &[blst_scalar],
     ) -> (Vec<blst_scalar>, Self::Auxiliary, Duration) {
         let timer = Timer::new();
+        let n = x_scalars.len();
 
-        let n = bases.as_slice().len();
+        let td_ptr = sk.trapdoor.as_ref().expect("trapdoor not initialized").0;
+        let samp_seed: u32 = rand::thread_rng().gen();
 
-        let s_scalars = generate_scalar_vector(kappa);
-        let mut err_scalars = vec![blst_scalar::default(); n];
+        // Prepare Output Buffers
+        let mut blinded_x = vec![blst_scalar::default(); n];
+        let mut s_vec = vec![blst_scalar::default(); kappa];
+        // let mut e_vec = vec![blst_scalar::default(); n];
+        let mut inner_product = blst_scalar::default();
+
+        // Allocate maximum possible dense size (n) to be safe
         let mut dense_err_scalars = vec![blst_scalar::default(); n];
         let mut dense_err_affines = vec![blst_p2_affine::default(); n];
-        let seed: u32 = rand::thread_rng().gen();
 
+        // Perform all NTL logic in one C FFI call
         let actual_t = unsafe {
-            sample_errors_and_affines_c(
-                err_scalars.as_mut_ptr(),
+            delegate_trapdoor_ntl(
+                td_ptr,
+                blinded_x.as_mut_ptr(),
+                s_vec.as_mut_ptr(),
+                // e_vec.as_mut_ptr(),
+                &mut inner_product,
                 dense_err_scalars.as_mut_ptr(),
                 dense_err_affines.as_mut_ptr(),
+                x_scalars.as_ptr(),
                 bases.as_slice().as_ptr(),
-                n,
+                sk.base.rho_super.as_ptr() as *const ark_bls12_381::Fr as *const _,
                 self.noise_rate,
-                seed,
+                samp_seed,
             )
         };
 
+        // Shrink the dense arrays to the actual number of non-zero errors generated
         dense_err_scalars.truncate(actual_t);
         dense_err_affines.truncate(actual_t);
 
-        let mut z_output: Vec<blst_scalar> = vec![blst_scalar::default(); kappa];
-
-        unsafe {
-            compute_trapdoor_product_c(
-                z_output.as_mut_ptr(),
-                sk.trapdoor_matrix.as_ref().unwrap().as_ptr(),
-                x_scalars.as_ptr(),
-                n,
-                kappa,
-            );
-        }
-
-        let mut blinded_x: Vec<blst_scalar> = vec![blst_scalar::default(); n];
-        for i in 0..n {
-            let z_idx = i % kappa;
-            let mut sum_fr = blst_fr::default();
-
-            unsafe {
-                let z_fr_ptr = &z_output[z_idx];
-                let mut z_fr = blst_fr::default();
-                blst_fr_from_scalar(&mut z_fr, z_fr_ptr);
-
-                if i < actual_t {
-                    let mut err_fr = blst_fr::default();
-                    blst_fr_from_scalar(&mut err_fr, &err_scalars[i]);
-                    blst_fr_add(&mut sum_fr, &z_fr, &err_fr);
-                } else {
-                    sum_fr = z_fr;
-                }
-
-                blst_scalar_from_fr(&mut blinded_x[i], &sum_fr);
-            }
-        }
-
-        let inner_product = fast_inner_product_safe(&blinded_x, &sk.base.rho_super, n);
-        let s_mtp = compute_msm(sk.mt_p.as_ref().unwrap(), &s_scalars);
+        // Core MSMs
+        let s_mtp = compute_msm(sk.mt_p.as_ref().unwrap(), &s_vec);
         let e_p = compute_msm_slice(&dense_err_affines, &dense_err_scalars);
 
         let mut corr = blst_p2::default();
@@ -202,7 +208,6 @@ impl DelegatedMsmProtocol for TdMsm {
             timer.elapsed(),
         )
     }
-
     fn compute(
         &self,
         bases: &p2_affines,
@@ -222,8 +227,6 @@ impl DelegatedMsmProtocol for TdMsm {
         proof: DelegatedMsmPf,
     ) -> (Result<blst_p2, ()>, Duration) {
         let timer = Timer::new();
-        let corr = aux.corr;
-
         let mut r_a = blst_p2::default();
         let mut s_q = blst_p2::default();
         let mut expected_b = blst_p2::default();
@@ -237,14 +240,14 @@ impl DelegatedMsmProtocol for TdMsm {
                 256,
             );
             blst_p2_add_or_double(&mut expected_b, &r_a, &s_q);
+
             if !blst_p2_is_equal(&proof.b_result, &expected_b) {
                 return (Err(()), timer.elapsed());
             }
-            let mut res = blst_p2::default();
-            blst_p2_add_or_double(&mut res, &proof.a_result, &corr);
 
-            println!("\n=== POSTPROCESS DEBUG ===");
-            println!("final result = a_result + corr: {}", point_to_hex(&res));
+            let mut res = blst_p2::default();
+            blst_p2_add_or_double(&mut res, &proof.a_result, &aux.corr);
+            println!("final result: {}", point_to_hex(&res));
             (Ok(res), timer.elapsed())
         }
     }

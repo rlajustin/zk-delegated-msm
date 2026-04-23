@@ -1,9 +1,9 @@
 use crate::io::{
-    init_level, load_2g2t_sk, load_bases_subset, load_pk, point_to_hex, save_2g2t_sk, save_pk,
-    ClientRequest, CommStats,
+    init_level, load_2g2t_sk, load_bases_subset, load_pk, save_2g2t_sk, save_pk, ClientRequest,
+    CommStats,
 };
 use crate::protocol::{HasMsmBase, LatticeParams};
-use crate::{compute_msm, DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol};
+use crate::{DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol};
 use blst::{blst_p2, blst_scalar, p2_affines};
 use std::ops::Add;
 
@@ -59,6 +59,7 @@ impl<P: DelegatedMsmProtocol> MsmClient<P> {
     pub fn init_client_zk(&mut self, server: &Sender<ClientRequest>) -> std::io::Result<()> {
         let state = self.state.as_mut().expect("Client state missing");
         if init_level::<P>(&self.base_dir) <= 1 {
+            println!("Missing preprocessed lattice data, generating...");
             let preprocess_zk_time = self.protocol.preprocess_zk(
                 state.n,
                 state.kappa,
@@ -97,11 +98,6 @@ impl<P: DelegatedMsmProtocol> MsmClient<P> {
         stats: &mut CommStats,
     ) -> (Result<blst_p2, String>, std::time::Duration) {
         let state = self.state.as_ref().expect("Client not booted");
-
-        println!(
-            "Expected: {}",
-            point_to_hex(&compute_msm(&state.bases, scalars))
-        );
 
         let (msg, aux, delegate_time) =
             self.protocol

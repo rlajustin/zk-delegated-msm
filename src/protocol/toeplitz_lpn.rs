@@ -1,11 +1,11 @@
-use crate::bindings::{compute_lpn_sampling_ntl_c, sample_errors_and_affines_c};
+use crate::bindings::delegate_toeplitz_ntl;
 use crate::io::{load_toeplitz_sk, point_to_hex, save_toeplitz_sk, ClientRequest};
 use crate::protocol::{HasMsmBase, MsmBase};
 use crate::timer::Timer;
 use crate::{
-    compute_msm, compute_msm_slice, compute_mt_p_server_aided, compute_toeplitz_mt_p,
-    fast_inner_product_safe, preprocess_2g2t_logic, random_scalar, DelegatedMsmPf, DelegatedMsmPk,
-    DelegatedMsmProtocol, LatticeParams,
+    compute_msm, compute_msm_slice, compute_mt_p_toeplitz_server_aided, compute_toeplitz_mt_p,
+    preprocess_2g2t_logic, random_scalar, DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol,
+    LatticeParams,
 };
 use ark_bls12_381::Fr;
 use ark_ff::{BigInteger, PrimeField};
@@ -117,7 +117,14 @@ impl DelegatedMsmProtocol for ToeplitzMsm {
         // Delegate expensive MSM part to server
         let mt_p_vec = {
             if USE_SERVER_PREPROCESSING {
-                compute_mt_p_server_aided(&toeplitz_vector, server, &mut timer, n, kappa, sk)
+                compute_mt_p_toeplitz_server_aided(
+                    &toeplitz_vector,
+                    server,
+                    &mut timer,
+                    n,
+                    kappa,
+                    sk,
+                )
             } else {
                 compute_toeplitz_mt_p(&toeplitz_vector, bases, n, kappa)
             }
@@ -159,19 +166,29 @@ impl DelegatedMsmProtocol for ToeplitzMsm {
         let n = bases.as_slice().len();
 
         let s_scalars = generate_scalar_vector(kappa);
+
+        let mut inner_product = blst_scalar::default();
+        let mut blinded_x: Vec<blst_scalar> = vec![blst_scalar::default(); n];
         let mut err_scalars = vec![blst_scalar::default(); n];
         let mut dense_err_scalars = vec![blst_scalar::default(); n];
         let mut dense_err_affines = vec![blst_p2_affine::default(); n];
         let seed: u32 = rand::thread_rng().gen();
+        println!("IDK");
 
-        // 1. Sample errors and compute z_scalars (as you did before)
         let actual_t = unsafe {
-            sample_errors_and_affines_c(
+            delegate_toeplitz_ntl(
+                blinded_x.as_mut_ptr(),
+                &mut inner_product,
                 err_scalars.as_mut_ptr(),
                 dense_err_scalars.as_mut_ptr(),
                 dense_err_affines.as_mut_ptr(),
+                x_scalars.as_ptr(),
+                s_scalars.as_ptr(),
                 bases.as_slice().as_ptr(),
+                sk.m_matrix_toeplitz.as_ref().unwrap().as_ptr(),
+                sk.base.rho_super.as_ptr(),
                 n,
+                kappa,
                 self.noise_rate,
                 seed,
             )
@@ -180,24 +197,6 @@ impl DelegatedMsmProtocol for ToeplitzMsm {
         dense_err_scalars.truncate(actual_t);
         dense_err_affines.truncate(actual_t);
 
-        let mut blinded_x: Vec<blst_scalar> = vec![blst_scalar::default(); n];
-        println!("Time elapsed before sampling: {:?}", timer.elapsed());
-
-        unsafe {
-            compute_lpn_sampling_ntl_c(
-                blinded_x.as_mut_ptr(),
-                err_scalars.as_ptr(),
-                s_scalars.as_ptr(),
-                x_scalars.as_ptr(),
-                sk.m_matrix_toeplitz.as_ref().unwrap().as_ptr(),
-                n,
-                kappa,
-            );
-        }
-
-        println!("Time elapsed at lpn sampling: {:?}", timer.elapsed());
-
-        let inner_product = fast_inner_product_safe(&blinded_x, &sk.base.rho_super, n);
         let s_mtp = compute_msm(sk.mt_p.as_ref().unwrap(), &s_scalars);
         let e_p = compute_msm_slice(&dense_err_affines, &dense_err_scalars);
 

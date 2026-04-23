@@ -1,9 +1,12 @@
 use std::sync::mpsc::channel;
 
 use blst::p2_affines;
-use zk_delegated_msm::io::{init_level, save_bases, ClientRequest, CommStats};
+use zk_delegated_msm::io::{
+    init_level, load_bases_subset, point_to_hex, save_bases, ClientRequest, CommStats,
+};
 use zk_delegated_msm::protocol::{DelegatedMsmProtocol, TdMsm, ToeplitzMsm};
-use zk_delegated_msm::{generate_bases, generate_scalars, MsmClient, MsmServer};
+use zk_delegated_msm::timer::Timer;
+use zk_delegated_msm::{compute_msm, generate_bases, generate_scalars, MsmClient, MsmServer};
 
 pub trait ProtocolNew {
     fn new(kappa: usize, noise_rate: f64) -> Self;
@@ -26,6 +29,11 @@ static BASE_DIR: &str = "data";
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let use_td = args.iter().any(|a| a == "--td");
+    if use_td {
+        println!("Testing Trapdoor Implementation");
+    } else {
+        println!("Testing Toeplitz Implementation");
+    }
 
     let n = 1 << 18;
     let kappa = 1 << 8;
@@ -64,8 +72,16 @@ fn run_client<P: DelegatedMsmProtocol + ProtocolNew>(
     ready_rx.recv().expect("Server thread panicked");
     client.init_client_zk(&server_tx)?;
 
-    let mut stats = CommStats::default();
+    // Handle request
     let x_scalars = generate_scalars(n);
+
+    let bases = load_bases_subset(BASE_DIR, n)?;
+    let pippenger_timer = Timer::new();
+    let expected = compute_msm(&bases, &x_scalars);
+    println!("Expected: {}", point_to_hex(&expected));
+    println!("Time taken: {:?}", pippenger_timer.elapsed());
+
+    let mut stats = CommStats::default();
     let (res, time) = client.request(&server_tx, &x_scalars, &mut stats);
     match res {
         Ok(_) => {

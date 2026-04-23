@@ -246,11 +246,8 @@ pub fn load_toeplitz_sk(base_dir: &str, params: LatticeParams) -> std::io::Resul
 }
 
 pub fn save_td_sk(base_dir: &str, sk: &TdSk) -> std::io::Result<()> {
+    // Only need to save trapdoor seed and precomputed mt_p
     let mt_p = sk.mt_p.as_ref().ok_or(std::io::ErrorKind::InvalidInput)?;
-    let trapdoor_matrix = sk
-        .trapdoor_matrix
-        .as_ref()
-        .ok_or(std::io::ErrorKind::InvalidInput)?;
     let seed = sk.trapdoor_seed.ok_or(std::io::ErrorKind::InvalidInput)?;
 
     let mut file = BufWriter::new(File::create(get_path_protocol::<TdMsm>(
@@ -258,11 +255,6 @@ pub fn save_td_sk(base_dir: &str, sk: &TdSk) -> std::io::Result<()> {
         PathType::ProtocolSecretKey,
     ))?);
     write_affines(&mut file, mt_p.as_slice())?;
-
-    for scalar in trapdoor_matrix {
-        write_scalar(&mut file, scalar)?;
-    }
-
     file.write_all(&seed.to_le_bytes())
 }
 
@@ -275,19 +267,15 @@ pub fn load_td_sk(base_dir: &str, params: LatticeParams) -> std::io::Result<TdSk
 
     let mt_p = Some(p2_affines::from(&read_points(&mut file, params.kappa)?));
 
-    let trapdoor_len = params.n * params.kappa;
-    let mut trapdoor: Vec<blst_scalar> = vec![blst_scalar::default(); trapdoor_len];
-    for s in trapdoor.iter_mut() {
-        *s = read_scalar(&mut file)?;
-    }
-
     let mut seed_buf = [0u8; 4];
     file.read_exact(&mut seed_buf)?;
 
     Ok(TdSk {
+        n: params.n,
+        kappa: params.kappa,
         base,
         mt_p,
-        trapdoor_matrix: Some(trapdoor),
+        trapdoor: None,
         trapdoor_seed: Some(u32::from_le_bytes(seed_buf)),
     })
 }

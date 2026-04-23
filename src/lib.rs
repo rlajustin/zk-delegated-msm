@@ -135,7 +135,57 @@ pub fn compute_toeplitz_mt_p(
     (0..kappa).into_par_iter().map(process_column).collect()
 }
 
-pub fn compute_mt_p_server_aided(
+pub fn compute_mt_p_trapdoor_server_aided(
+    a_matrix_flat: &[blst_scalar],
+    server: &Sender<ClientRequest>,
+    timer: &mut Timer,
+    n: usize,
+    kappa: usize,
+    sk: &TdSk,
+) -> Vec<blst_p2> {
+    let mut mt_p_results = Vec::with_capacity(kappa);
+
+    for col in 0..kappa {
+        let mut column_scalars = vec![blst_scalar::default(); n];
+        let mut r_a = blst_p2::default();
+        let mut s_q = blst_p2::default();
+        let mut expected_b = blst_p2::default();
+
+        for row in 0..n {
+            column_scalars[row] = a_matrix_flat[row * kappa + col].clone();
+        }
+
+        timer.pause();
+
+        let (resp_tx, resp_rx) = channel();
+
+        server
+            .send(ClientRequest::Compute(column_scalars.clone(), resp_tx))
+            .expect("Failed to send MSM request to server");
+
+        let proof = resp_rx
+            .recv()
+            .expect("Server disconnected during preprocessing");
+
+        timer.start();
+
+        let inner_product = fast_inner_product_safe(&column_scalars, &sk.base.rho_super, n);
+        unsafe {
+            blst_p2_mult(&mut r_a, &proof.a, sk.base.r.b.as_ptr(), 256);
+            blst_p2_mult(&mut s_q, &sk.base.q_point, inner_product.b.as_ptr(), 256);
+            blst_p2_add_or_double(&mut expected_b, &r_a, &s_q);
+        }
+        if unsafe { blst_p2_is_equal(&proof.b, &expected_b) } {
+            mt_p_results.push(proof.a);
+        } else {
+            panic!("Server messed up in preprocessing mt_p")
+        }
+    }
+
+    mt_p_results
+}
+
+pub fn compute_mt_p_toeplitz_server_aided(
     toeplitz_vec: &[blst_scalar],
     server: &Sender<ClientRequest>,
     timer: &mut Timer,
