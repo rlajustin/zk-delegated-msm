@@ -25,8 +25,8 @@ impl ProtocolNew for ToeplitzMsm {
 }
 
 static BASE_DIR: &str = "data";
-    static n = 1 << 18;
-    static  kappa = 1 << 9;
+static N: usize = 1 << 18;
+static KAPPA: usize = 1 << 9;
 
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -37,11 +37,10 @@ fn main() -> std::io::Result<()> {
         println!("Testing Toeplitz Implementation");
     }
 
-
     if use_td {
-        run_client::<TdMsm>(n, kappa)
+        run_client::<TdMsm>(N, KAPPA)
     } else {
-        run_client::<ToeplitzMsm>(n, kappa)
+        run_client::<ToeplitzMsm>(N, KAPPA)
     }
 }
 

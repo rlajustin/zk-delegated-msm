@@ -34,7 +34,7 @@ pub struct ToeplitzAux {
     pub corr: blst_p2,
 }
 
-static USE_SERVER_PREPROCESSING: bool = true;
+static USE_SERVER_PREPROCESSING: bool = false;
 
 pub fn get_log_n(n: usize, kappa: usize) -> usize {
     let ntt_size = (n + kappa - 1).next_power_of_two();
