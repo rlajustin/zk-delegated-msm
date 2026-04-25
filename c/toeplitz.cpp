@@ -1,7 +1,7 @@
-#include "blst.h"
 #include <NTL/ZZ_p.h>
 #include <NTL/ZZ_pX.h>
 #include <NTL/vec_ZZ_p.h>
+#include <blst/blst.h>
 #include <random>
 #include <stdlib.h>
 #include <string.h>

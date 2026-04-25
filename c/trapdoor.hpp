@@ -1,6 +1,6 @@
 #pragma once
 
-#include "blst.h"
+#include <blst/blst.h>
 #include <stddef.h>
 
 #ifdef __cplusplus

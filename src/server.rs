@@ -35,7 +35,7 @@ impl MsmServer {
         while let Ok(msg) = rx.recv() {
             match msg {
                 ClientRequest::Compute(z_scalars, tx_back) => {
-                    let (a, b) = self.handle_request(&z_scalars);
+                    let (a, b) = self.handle_request(z_scalars);
                     let _ = tx_back.send(ServerResponse { a, b });
                 }
                 ClientRequest::Shutdown => break,
@@ -55,11 +55,11 @@ impl MsmServer {
         self.state = Some(MsmServerState { bases, t_bases })
     }
 
-    pub fn handle_request(&self, z_scalars: &[blst_scalar]) -> (blst_p2, blst_p2) {
+    pub fn handle_request(&self, z_scalars: Vec<blst_scalar>) -> (blst_p2, blst_p2) {
         let state = self.state.as_ref().expect("Server state missing");
         (
-            compute_msm(&state.bases, z_scalars),
-            compute_msm(&state.t_bases, z_scalars),
+            compute_msm(&state.bases, &z_scalars),
+            compute_msm(&state.t_bases, &z_scalars),
         )
     }
 }

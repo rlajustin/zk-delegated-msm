@@ -12,6 +12,7 @@ cc = "1.0"
 
 [dependencies]
 blst = "0.3"
+cap = "0.1"
 rayon = "1.11"
 rand = "0.8"
 rand_chacha = "0.3"
