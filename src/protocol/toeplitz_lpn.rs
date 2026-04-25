@@ -173,7 +173,6 @@ impl DelegatedMsmProtocol for ToeplitzMsm {
         let mut dense_err_scalars = vec![blst_scalar::default(); n];
         let mut dense_err_affines = vec![blst_p2_affine::default(); n];
         let seed: u32 = rand::thread_rng().gen();
-        println!("IDK");
 
         let actual_t = unsafe {
             delegate_toeplitz_ntl(

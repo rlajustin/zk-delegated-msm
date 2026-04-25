@@ -25,6 +25,8 @@ impl ProtocolNew for ToeplitzMsm {
 }
 
 static BASE_DIR: &str = "data";
+    static n = 1 << 18;
+    static  kappa = 1 << 9;
 
 fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
@@ -35,8 +37,6 @@ fn main() -> std::io::Result<()> {
         println!("Testing Toeplitz Implementation");
     }
 
-    let n = 1 << 18;
-    let kappa = 1 << 8;
 
     if use_td {
         run_client::<TdMsm>(n, kappa)
@@ -58,7 +58,8 @@ fn run_client<P: DelegatedMsmProtocol + ProtocolNew>(
         println!("Global bases found");
     }
 
-    let mut client = MsmClient::new(P::new(kappa, 1f64 / (kappa as f64)), BASE_DIR);
+    // 2^-6
+    let mut client = MsmClient::new(P::new(kappa, 0.015625f64 / (kappa as f64)), BASE_DIR);
 
     println!("Initializing client-server setup");
     client.init_client(n, kappa)?;
