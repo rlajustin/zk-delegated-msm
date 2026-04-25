@@ -20,6 +20,7 @@ ark-poly = "0.5"
 ark-ff = "0.5"
 ark-bls12-381 = "0.5.0"
 hex = "0.4"
+chrono = "0.4"
 
 [[bin]]
 name = "zk_delegated_msm_test"

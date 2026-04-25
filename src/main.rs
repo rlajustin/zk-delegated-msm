@@ -9,8 +9,10 @@ use zk_delegated_msm::timer::Timer;
 use zk_delegated_msm::{compute_msm, generate_bases, generate_scalars, MsmClient, MsmServer};
 
 use std::collections::HashMap;
+use std::io::Write;
 
 static DEFAULT_KAPPA: usize = 1 << 9;
+static ITERATIONS: usize = 10;
 
 use cap::Cap;
 use std::alloc::System;
@@ -110,45 +112,70 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
             format!("{}", preprocess_zk_time.as_millis()),
         );
 
-        let x_scalars = generate_scalars(n);
         let bases = load_bases_subset(&base_dir, n)?;
 
-        let pippenger_timer = Timer::new();
-        let expected = compute_msm(&bases, &x_scalars);
-        let pippenger_time = pippenger_timer.elapsed();
-        println!("Pippenger MSM: {:?}", pippenger_time);
-        println!("Expected: {}", point_to_hex(&expected));
-        result.insert(
-            "pippenger_ms".to_string(),
-            format!("{}", pippenger_time.as_millis()),
-        );
+        let mut pippenger_times: Vec<u128> = Vec::new();
+        let mut request_times: Vec<u128> = Vec::new();
+        let mut verified_count: usize = 0;
+        let mut total_sent: usize = 0;
+        let mut total_recv: usize = 0;
 
-        let mut stats = CommStats::default();
-        let (res, request_time) = client.request(&server_tx, &x_scalars, &mut stats);
+        for i in 0..ITERATIONS {
+            println!("--- iteration {}/{} ---", i + 1, ITERATIONS);
 
-        match res {
-            Ok(_) => {
-                println!("Protocol: OK");
-                println!("Total Request Time: {:?}", request_time);
-                result.insert(
-                    "request_ms".to_string(),
-                    format!("{}", request_time.as_millis()),
-                );
-                result.insert("verified".to_string(), "true".to_string());
-            }
-            Err(e) => {
-                println!("Protocol Error: {}", e);
-                result.insert("verified".to_string(), "false".to_string());
+            let x_scalars = generate_scalars(n);
+            println!("  scalars generated");
+
+            let pippenger_timer = Timer::new();
+            let expected = compute_msm(&bases, &x_scalars);
+            let pippenger_time = pippenger_timer.elapsed();
+            println!("  Pippenger MSM: {:?}", pippenger_time);
+            println!("  Expected: {}", point_to_hex(&expected));
+            pippenger_times.push(pippenger_time.as_millis());
+
+            let mut stats = CommStats::default();
+            println!("  sending request...");
+            let (res, request_time) = client.request(&server_tx, &x_scalars, &mut stats);
+            total_sent += stats.total_bytes_sent;
+            total_recv += stats.total_bytes_received;
+
+            match res {
+                Ok(_) => {
+                    println!("Protocol: OK");
+                    println!("Total Request Time: {:?}", request_time);
+                    request_times.push(request_time.as_millis());
+                    verified_count += 1;
+                }
+                Err(e) => {
+                    println!("Protocol Error: {}", e);
+                }
             }
         }
 
+        let avg_pippenger: u64 = pippenger_times.iter().sum::<u128>() as u64 / ITERATIONS as u64;
+        let avg_request: u64 = if request_times.is_empty() {
+            0
+        } else {
+            request_times.iter().sum::<u128>() as u64 / request_times.len() as u64
+        };
+        println!("\nAverages over {} iterations:", ITERATIONS);
+        println!("  Pippenger: {} ms", avg_pippenger);
+        println!("  Request: {} ms", avg_request);
+        println!("  Verified: {}/{}", verified_count, ITERATIONS);
+
+        result.insert("pippenger_ms".to_string(), avg_pippenger.to_string());
+        result.insert("request_ms".to_string(), format!("{}", avg_request));
+        result.insert(
+            "verified".to_string(),
+            format!("{}/{}", verified_count, ITERATIONS),
+        );
         result.insert(
             "sent_mb".to_string(),
-            format!("{:.2}", stats.total_bytes_sent as f64 / 1_000_000.0),
+            format!("{:.2}", total_sent as f64 / 1_000_000.0 / ITERATIONS as f64),
         );
         result.insert(
             "received_kb".to_string(),
-            format!("{:.2}", stats.total_bytes_received as f64 / 1_000.0),
+            format!("{:.2}", total_recv as f64 / 1_000.0 / ITERATIONS as f64),
         );
 
         println!();
@@ -179,6 +206,30 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
             r.get("verified").unwrap_or(&"?".to_string())
         );
     }
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let log_filename = format!("{}_{}.csv", protocol, timestamp);
+    let mut log_file = std::fs::File::create(&log_filename)?;
+    writeln!(log_file, "n_exp,n,kappa,preprocess_ms,preprocess_zk_ms,pippenger_ms,request_ms,verified,sent_mb,received_kb")?;
+    for r in &results {
+        writeln!(
+            log_file,
+            "{},{},{},{},{},{},{},{},{},{}",
+            r.get("n_exp").cloned().unwrap_or_default(),
+            r.get("n").cloned().unwrap_or_default(),
+            r.get("kappa").cloned().unwrap_or_default(),
+            r.get("preprocess_ms").cloned().unwrap_or_default(),
+            r.get("preprocess_zk_ms").cloned().unwrap_or_default(),
+            r.get("pippenger_ms").cloned().unwrap_or_default(),
+            r.get("request_ms").cloned().unwrap_or_default(),
+            r.get("verified")
+                .cloned()
+                .unwrap_or_else(|| "?".to_string()),
+            r.get("sent_mb").cloned().unwrap_or_default(),
+            r.get("received_kb").cloned().unwrap_or_default()
+        )?;
+    }
+    println!("\nResults saved to: {}", log_filename);
 
     Ok(())
 }

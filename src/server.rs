@@ -35,7 +35,9 @@ impl MsmServer {
         while let Ok(msg) = rx.recv() {
             match msg {
                 ClientRequest::Compute(z_scalars, tx_back) => {
+                    println!("Server: received compute request");
                     let (a, b) = self.handle_request(z_scalars);
+                    println!("Server: computed, sending response");
                     let _ = tx_back.send(ServerResponse { a, b });
                 }
                 ClientRequest::Shutdown => break,
