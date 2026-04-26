@@ -1,4 +1,4 @@
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, sync_channel};
 
 use blst::p2_affines;
 use zk_delegated_msm::io::{
@@ -47,7 +47,7 @@ fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let use_td = args.iter().any(|a| a == "--td");
 
-    println!("Running benchmark for n=16..=20, kappa=512");
+    println!("Running benchmark for n=2^16..=20, kappa=512");
     println!("{}", if use_td { "Trapdoor" } else { "Toeplitz" });
     println!();
 
@@ -79,11 +79,12 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
         }
 
         let mut client = MsmClient::new(
-            P::new(DEFAULT_KAPPA, 0.015625f64 / (DEFAULT_KAPPA as f64)),
+            P::new(DEFAULT_KAPPA, 1f64 / (DEFAULT_KAPPA as f64)),
             &base_dir,
         );
 
         let preprocess_timer = Timer::new();
+        println!("Initializing client...");
         client.init_client(n, DEFAULT_KAPPA)?;
         let preprocess_time = preprocess_timer.elapsed();
         println!("Preprocess: {:?}", preprocess_time);
@@ -92,7 +93,7 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
             format!("{}", preprocess_time.as_millis()),
         );
 
-        let (server_tx, server_rx) = channel();
+        let (server_tx, server_rx) = sync_channel(1);
         let (ready_tx, ready_rx) = channel();
         let server_handle = std::thread::spawn({
             let base_dir = base_dir.clone();
@@ -117,8 +118,6 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
         let mut pippenger_times: Vec<u128> = Vec::new();
         let mut request_times: Vec<u128> = Vec::new();
         let mut verified_count: usize = 0;
-        let mut total_sent: usize = 0;
-        let mut total_recv: usize = 0;
 
         for i in 0..ITERATIONS {
             println!("--- iteration {}/{} ---", i + 1, ITERATIONS);
@@ -133,11 +132,8 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
             println!("  Expected: {}", point_to_hex(&expected));
             pippenger_times.push(pippenger_time.as_millis());
 
-            let mut stats = CommStats::default();
             println!("  sending request...");
-            let (res, request_time) = client.request(&server_tx, &x_scalars, &mut stats);
-            total_sent += stats.total_bytes_sent;
-            total_recv += stats.total_bytes_received;
+            let (res, request_time) = client.request(&server_tx, &x_scalars);
 
             match res {
                 Ok(_) => {
@@ -169,19 +165,22 @@ fn run_benchmark<P: DelegatedMsmProtocol + ProtocolNew>(protocol: &str) -> std::
             "verified".to_string(),
             format!("{}/{}", verified_count, ITERATIONS),
         );
-        result.insert(
-            "sent_mb".to_string(),
-            format!("{:.2}", total_sent as f64 / 1_000_000.0 / ITERATIONS as f64),
-        );
-        result.insert(
-            "received_kb".to_string(),
-            format!("{:.2}", total_recv as f64 / 1_000.0 / ITERATIONS as f64),
-        );
+        // result.insert(
+        //     "sent_mb".to_string(),
+        //     format!("{:.2}", total_sent as f64 / 1_000_000.0 / ITERATIONS as f64),
+        // );
+        // result.insert(
+        //     "received_kb".to_string(),
+        //     format!("{:.2}", total_recv as f64 / 1_000.0 / ITERATIONS as f64),
+        // );
 
         println!();
         results.push(result);
 
-        server_tx.send(ClientRequest::Shutdown).unwrap();
+        server_tx
+            .send(ClientRequest::Shutdown)
+            .map_err(|e| format!("Failed to send to server: {}", e))
+            .unwrap();
         server_handle.join().unwrap();
     }
 

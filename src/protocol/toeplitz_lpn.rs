@@ -14,8 +14,9 @@ use blst::{
     blst_p2, blst_p2_add_or_double, blst_p2_affine, blst_p2_cneg, blst_p2_is_equal, blst_p2_mult,
     blst_scalar, p2_affines,
 };
+use core::panic;
 use rand::Rng;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 #[derive(Default)]
@@ -106,7 +107,7 @@ impl DelegatedMsmProtocol for ToeplitzMsm {
         n: usize,
         kappa: usize,
         bases: &p2_affines,
-        server: &Sender<ClientRequest>,
+        server: &SyncSender<ClientRequest>,
         sk: &mut Self::SecretKey,
         _pk: &mut DelegatedMsmPk,
     ) -> Duration {
@@ -192,6 +193,10 @@ impl DelegatedMsmProtocol for ToeplitzMsm {
                 seed,
             )
         };
+
+        if actual_t == 0 {
+            panic!("error vector ended up empty");
+        }
 
         dense_err_scalars.truncate(actual_t);
         dense_err_affines.truncate(actual_t);

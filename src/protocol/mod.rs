@@ -1,6 +1,6 @@
 use crate::io::ClientRequest;
 use blst::{blst_fr, blst_p2, blst_scalar, p2_affines};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 pub struct DelegatedMsmPk {
@@ -40,7 +40,7 @@ pub trait DelegatedMsmProtocol {
         n: usize,
         kappa: usize,
         bases: &crate::p2_affines,
-        server: &Sender<ClientRequest>,
+        server: &SyncSender<ClientRequest>,
         sk: &mut Self::SecretKey,
         pk: &mut DelegatedMsmPk,
     ) -> Duration;

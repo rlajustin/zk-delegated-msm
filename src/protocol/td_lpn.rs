@@ -14,7 +14,7 @@ use blst::{
     blst_scalar, p2_affines,
 };
 use rand::Rng;
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 pub struct TrapdoorPtr(pub *mut TrapdoorMatrix);
@@ -113,7 +113,7 @@ impl DelegatedMsmProtocol for TdMsm {
         n: usize,
         kappa: usize,
         _bases: &p2_affines,
-        server: &Sender<ClientRequest>,
+        server: &SyncSender<ClientRequest>,
         sk: &mut Self::SecretKey,
         _pk: &mut DelegatedMsmPk,
     ) -> Duration {

@@ -126,36 +126,34 @@ size_t delegate_toeplitz_ntl(
 
   init_ntl_bls12_381();
 
-  // CONVERSION
+  // 1. PRE-ALLOCATE
   vec_ZZ_p x_vec, rho_vec;
   x_vec.SetLength(n);
   rho_vec.SetLength(n);
 
   ZZ_pX poly_toeplitz, poly_s;
+  poly_toeplitz.SetLength(n + kappa - 1);
+  poly_s.SetLength(kappa);
 
+  // 2. USE DIRECT ACCESS instead of SetCoeff
   for (size_t i = 0; i < n + kappa - 1; i++) {
-    ZZ_p c;
-    b2z(c, &toeplitz_vec[i]);
-    SetCoeff(poly_toeplitz, i, c);
+    b2z(poly_toeplitz[i], &toeplitz_vec[i]);
   }
   for (size_t i = 0; i < kappa; i++) {
-    ZZ_p c;
-    b2z(c, &s[kappa - 1 - i]);
-    SetCoeff(poly_s, i, c);
+    // Correct Toeplitz indexing: x[kappa - 1 - i]
+    b2z(poly_s[i], &s[kappa - 1 - i]);
   }
   for (size_t i = 0; i < n; i++) {
     b2z(x_vec[i], &x[i]);
-  }
-  for (size_t i = 0; i < n; i++) {
     fr2z(rho_vec[i], &rho[i]);
   }
 
-  // NOISE SAMPLING
+  // 3. NOISE SAMPLING
   std::mt19937 gen(seed);
   std::geometric_distribution<size_t> dist(noise_rate);
 
-  vec_ZZ_p err;
-  err.SetLength(n);
+  vec_ZZ_p err_vec;
+  err_vec.SetLength(n);
 
   size_t t_count = 0;
   size_t next_err_idx = dist(gen);
@@ -166,31 +164,31 @@ size_t delegate_toeplitz_ntl(
       random(r);
     } while (IsZero(r));
 
-    err[next_err_idx] = r;
+    err_vec[next_err_idx] = r;
 
-    blst_scalar err;
-    z2b(&err, r);
-    if (err_scalars_out) {
-      err_scalars_out[next_err_idx] = err;
-    }
-    dense_err_scalars_out[t_count] = err;
+    // Convert once to scalar
+    blst_scalar s_tmp;
+    z2b(&s_tmp, r);
+
+    if (err_scalars_out)
+      err_scalars_out[next_err_idx] = s_tmp;
+    dense_err_scalars_out[t_count] = s_tmp;
     dense_err_affines_out[t_count] = bases_in[next_err_idx];
 
     t_count++;
     next_err_idx += (dist(gen) + 1);
   }
 
-  // COMPUTATION
-  ZZ_pX result;
-  mul(result, poly_toeplitz, poly_s);
+  // 4. COMPUTATION
+  ZZ_pX result_poly;
+  mul(result_poly, poly_toeplitz, poly_s);
 
   vec_ZZ_p blinded_x_vec;
   blinded_x_vec.SetLength(n);
 
   for (size_t i = 0; i < n; i++) {
-    // val = (T * s)_i + e_i + x_i
-    ZZ_p val = coeff(result, i + kappa - 1);
-    val += err[i];
+    ZZ_p val = coeff(result_poly, i + kappa - 1);
+    val += err_vec[i];
     val += x_vec[i];
 
     blinded_x_vec[i] = val;
@@ -198,7 +196,6 @@ size_t delegate_toeplitz_ntl(
   }
 
   ntl_inner_product(inner_product_out, blinded_x_vec, rho_vec);
-
   return t_count;
 }
 

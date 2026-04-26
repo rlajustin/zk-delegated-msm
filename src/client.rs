@@ -1,13 +1,13 @@
 use crate::io::{
     init_level, load_2g2t_sk, load_bases_subset, load_pk, save_2g2t_sk, save_pk, ClientRequest,
-    CommStats,
 };
 use crate::protocol::{HasMsmBase, LatticeParams};
 use crate::{DelegatedMsmPf, DelegatedMsmPk, DelegatedMsmProtocol};
 use blst::{blst_p2, blst_scalar, p2_affines};
 use std::ops::Add;
-
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, SyncSender, TrySendError};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 pub struct MsmClientState<P: DelegatedMsmProtocol> {
     pub bases: p2_affines,
@@ -56,7 +56,7 @@ impl<P: DelegatedMsmProtocol> MsmClient<P> {
         Ok(())
     }
 
-    pub fn init_client_zk(&mut self, server: &Sender<ClientRequest>) -> std::io::Result<()> {
+    pub fn init_client_zk(&mut self, server: &SyncSender<ClientRequest>) -> std::io::Result<()> {
         let state = self.state.as_mut().expect("Client state missing");
         if init_level::<P>(&self.base_dir) <= 1 {
             println!("Missing preprocessed lattice data, generating...");
@@ -93,9 +93,8 @@ impl<P: DelegatedMsmProtocol> MsmClient<P> {
 
     pub fn request(
         &self,
-        server_tx: &Sender<ClientRequest>,
+        server_tx: &SyncSender<ClientRequest>,
         scalars: &[blst_scalar],
-        stats: &mut CommStats,
     ) -> (Result<blst_p2, String>, std::time::Duration) {
         let state = self.state.as_ref().expect("Client not booted");
 
@@ -103,17 +102,36 @@ impl<P: DelegatedMsmProtocol> MsmClient<P> {
             self.protocol
                 .delegate(state.kappa, &state.bases, &state.sk, scalars);
 
-        stats.record_outbound_scalars(&msg);
-
         let (resp_tx, resp_rx) = channel();
+        let start_send = Instant::now();
+        let timeout = Duration::from_secs(3);
 
-        server_tx
-            .send(ClientRequest::Compute(msg, resp_tx))
-            .unwrap();
+        println!("Sending request to server...");
 
-        let response = resp_rx.recv().expect("Server thread died");
-
-        stats.record_inbound_points(2);
+        loop {
+            match server_tx.try_send(ClientRequest::Compute(msg.clone(), resp_tx.clone())) {
+                Ok(_) => break, // Successfully sent
+                Err(TrySendError::Full(_)) => {
+                    if start_send.elapsed() > timeout {
+                        return (
+                            Err("Send timeout: Server queue is full and not clearing".to_string()),
+                            Duration::default(),
+                        );
+                    }
+                    sleep(Duration::from_millis(100)); // Back off
+                    continue;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    return (
+                        Err("Server channel disconnected".to_string()),
+                        Duration::default(),
+                    );
+                }
+            }
+        }
+        let response = resp_rx
+            .recv_timeout(Duration::from_secs(30))
+            .expect("Server took too long to respond");
 
         let proof = DelegatedMsmPf {
             a_result: response.a,

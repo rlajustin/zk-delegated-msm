@@ -20,7 +20,7 @@ pub use protocol::{
 use rand::RngCore;
 use rayon::prelude::*;
 pub use server::MsmServer;
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, SyncSender};
 
 pub fn generate_bases(n: usize) -> Vec<blst_p2> {
     let mut bases: Vec<blst_p2> = vec![blst_p2::default(); n];
@@ -137,7 +137,7 @@ pub fn compute_toeplitz_mt_p(
 
 pub fn compute_mt_p_trapdoor_server_aided(
     a_matrix_flat: &[blst_scalar],
-    server: &Sender<ClientRequest>,
+    server: &SyncSender<ClientRequest>,
     timer: &mut Timer,
     n: usize,
     kappa: usize,
@@ -161,6 +161,7 @@ pub fn compute_mt_p_trapdoor_server_aided(
 
         server
             .send(ClientRequest::Compute(column_scalars.clone(), resp_tx))
+            .map_err(|e| format!("Failed to send to server: {}", e))
             .expect("Failed to send MSM request to server");
 
         let proof = resp_rx
@@ -187,7 +188,7 @@ pub fn compute_mt_p_trapdoor_server_aided(
 
 pub fn compute_mt_p_toeplitz_server_aided(
     toeplitz_vec: &[blst_scalar],
-    server: &Sender<ClientRequest>,
+    server: &SyncSender<ClientRequest>,
     timer: &mut Timer,
     n: usize,
     kappa: usize,
@@ -207,6 +208,7 @@ pub fn compute_mt_p_toeplitz_server_aided(
 
         server
             .send(ClientRequest::Compute(column_scalars.clone(), resp_tx))
+            .map_err(|e| format!("Failed to send to server: {}", e))
             .expect("Failed to send MSM request to server");
 
         let proof = resp_rx
